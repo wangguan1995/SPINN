@@ -12,6 +12,7 @@ from utils.eval_functions import setup_eval_function
 from utils.training_utils import *
 from utils.vorticity import vorx, vory, vorz
 from utils.visualizer import show_solution
+from cylinder4d import visu, load_vtu_from_mesh, generate_train_data_cylinder, generate_test_data_cylinder, save_weights
 
 
 @partial(jax.jit, static_argnums=(0,))
@@ -42,8 +43,7 @@ def apply_model_spinn(apply_fn, params, nu, lbda_c, lbda_ic, *train_data):
 
         loss_x = jnp.mean((wx_t + ux*wx_x + uy*wx_y + uz*wx_z - \
              (wx*ux_x + wy*ux_y + wz*ux_z) - \
-                nu*(wx_xx + wx_yy + wx_zz) - \
-                    f[0])**2)
+                nu*(wx_xx + wx_yy + wx_zz)))
 
         # y-component
         wy_t = jvp(lambda t: vory(apply_fn, params, t, x, y, z), (t,), (vec_t,))[1]
@@ -57,9 +57,7 @@ def apply_model_spinn(apply_fn, params, nu, lbda_c, lbda_ic, *train_data):
 
         loss_y = jnp.mean((wy_t + ux*wy_x + uy*wy_y + uz*wy_z - \
              (wx*uy_x + wy*uy_y + wz*uy_z) - \
-                nu*(wy_xx + wy_yy + wy_zz) - \
-                    f[1])**2)
-
+                nu*(wy_xx + wy_yy + wy_zz)))
         # z-component
         wz_t = jvp(lambda t: vorz(apply_fn, params, t, x, y, z), (t,), (vec_t,))[1]
         wz_x, wz_xx = hvp_fwdfwd(lambda x: vorz(apply_fn, params, t, x, y, z), (x,), (vec_x,), True)
@@ -72,8 +70,7 @@ def apply_model_spinn(apply_fn, params, nu, lbda_c, lbda_ic, *train_data):
 
         loss_z = jnp.mean((wz_t + ux*wz_x + uy*wz_y + uz*wz_z - \
              (wx*uz_x + wy*uz_y + wz*uz_z) - \
-                nu*(wz_xx + wz_yy + wz_zz) - \
-                    f[2])**2)
+                nu*(wz_xx + wz_yy + wz_zz)))
 
         loss_c = jnp.mean((ux_x + uy_y + uz_z)**2)
 
@@ -84,27 +81,30 @@ def apply_model_spinn(apply_fn, params, nu, lbda_c, lbda_ic, *train_data):
         wx = vorx(apply_fn, params, t, x, y, z)
         wy = vory(apply_fn, params, t, x, y, z)
         wz = vorz(apply_fn, params, t, x, y, z)
-        loss = jnp.mean((wx - w[0])**2) + jnp.mean((wy - w[1])**2) + jnp.mean((wz - w[2])**2)
-        loss += jnp.mean((ux - u[0])**2) + jnp.mean((uy - u[1])**2) + jnp.mean((uz - u[2])**2)
+        loss_w =    1 * jnp.mean((wx - w[0])**2) +     1 * jnp.mean((wy - w[1])**2) +     1 * jnp.mean((wz - w[2])**2)
+        loss_u = 1000 * jnp.mean((ux - u[0])**2) + 10000 * jnp.mean((uy - u[1])**2) + 10000 * jnp.mean((uz - u[2])**2)
+        loss = loss_w + loss_u
         return loss
 
-    def boundary_loss(params, t, x, y, z, w):
+    def boundary_loss(params, t, x, y, z, w, u):
         loss = 0.
         for i in range(6):
             wx = vorx(apply_fn, params, t[i], x[i], y[i], z[i])
             wy = vory(apply_fn, params, t[i], x[i], y[i], z[i])
             wz = vorz(apply_fn, params, t[i], x[i], y[i], z[i])
-            loss += (1/6.) * jnp.mean((wx - w[i][0])**2) + jnp.mean((wy - w[i][1])**2) + jnp.mean((wz - w[i][2])**2)
+            ux, uy, uz = apply_fn(params, t[i], x[i], y[i], z[i])
+            loss_w = (1/6.) *    1 * jnp.mean((wx - w[i][0])**2) +     1 * jnp.mean((wy - w[i][1])**2) +     1 * jnp.mean((wz - w[i][2])**2)
+            loss_u = (1/6.) * 1000 * jnp.mean((ux - u[i][0])**2) + 10000 * jnp.mean((uy - u[i][1])**2) + 10000 * jnp.mean((uz - u[i][2])**2)
+            loss += (loss_w + loss_u)
         return loss
 
     # unpack data
-    tc, xc, yc, zc, fc, ti, xi, yi, zi, wi, ui, tb, xb, yb, zb, wb = train_data
+    ub = None
+    # tc, xc, yc, zc, fc, ti, xi, yi, zi, wi, ui, tb, xb, yb, zb, wb = train_data
+    tc, xc, yc, zc, fc, ti, xi, yi, zi, wi, ui, tb, xb, yb, zb, wb, ub = train_data
 
     # isolate loss func from redundant arguments
-    loss_fn = lambda params: residual_loss(params, tc, xc, yc, zc, fc) + \
-                        lbda_ic*initial_loss(params, ti, xi, yi, zi, wi, ui) + \
-                        boundary_loss(params, tb, xb, yb, zb, wb)
-
+    loss_fn = lambda params: lbda_ic*initial_loss(params, ti, xi, yi, zi, wi, ui) + boundary_loss(params, tb, xb, yb, zb, wb, ub) + residual_loss(params, tc, xc, yc, zc, fc)
     loss, gradient = jax.value_and_grad(loss_fn)(params)
 
     return loss, gradient
@@ -132,14 +132,14 @@ if __name__ == '__main__':
     parser.add_argument('--features', type=int, default=64, help='feature size of each layer')
     parser.add_argument('--r', type=int, default=128, help='rank of a approximated tensor')
     parser.add_argument('--out_dim', type=int, default=3, help='size of model output')
-    parser.add_argument('--nu', type=float, default=0.05, help='viscosity')
+    parser.add_argument('--nu', type=float, default=1/3900, help='viscosity')
     parser.add_argument('--lbda_c', type=int, default=100, help='None')
     parser.add_argument('--lbda_ic', type=int, default=10, help='None')
 
     # log settings
     parser.add_argument('--log_iter', type=int, default=1000, help='print log every...')
     parser.add_argument('--plot_iter', type=int, default=10000, help='plot result every...')
-
+    parser.add_argument('--step_idx', type=int, default=0, help='step index for time marching')
     args = parser.parse_args()
 
     # random key
@@ -168,8 +168,10 @@ if __name__ == '__main__':
 
     # dataset
     key, subkey = jax.random.split(key, 2)
-    train_data = generate_train_data(args, subkey)
-    test_data = generate_test_data(args, result_dir)
+    # train_data = generate_train_data(args, subkey)
+    # test_data = generate_test_data(args, result_dir)
+    train_data = generate_train_data_cylinder(args.step_idx)
+    test_data = generate_test_data_cylinder(args.step_idx)
 
     # evaluation function
     eval_fn = setup_eval_function(args.model, args.equation)
@@ -184,7 +186,7 @@ if __name__ == '__main__':
     if os.path.exists(os.path.join(result_dir, 'best_error.csv')):
         os.remove(os.path.join(result_dir, 'best_error.csv'))
     best = 100000.
-
+    best_error = 100000.
     print("compiling...")
 
     # start training
@@ -195,7 +197,6 @@ if __name__ == '__main__':
         if e % 100 == 0:
             # sample new input data
             key, subkey = jax.random.split(key, 2)
-            train_data = generate_train_data(args, subkey)
 
         loss, gradient = apply_model_spinn(apply_fn, params, args.nu, args.lbda_c, args.lbda_ic, *train_data)
         params, state = update_model(optim, gradient, params, state)
@@ -203,7 +204,10 @@ if __name__ == '__main__':
         if e % 10 == 0:
             if loss < best:
                 best = loss
-                best_error = eval_fn(apply_fn, params, *test_data)
+                new_best_error = eval_fn(apply_fn, params, *test_data)
+                if best_error < new_best_error:
+                    best_error = new_best_error
+                    save_weights({"params":params, "state":state}, f"best.npy")
 
         # log
         if e % args.log_iter == 0:
@@ -214,7 +218,7 @@ if __name__ == '__main__':
 
         # visualization
         if e % args.plot_iter == 0:
-            show_solution(args, apply_fn, params, test_data, result_dir, e)
+            visu(apply_fn, params, e)
 
     # training done
     runtime = time.time() - start
