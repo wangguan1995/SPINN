@@ -94,7 +94,8 @@ def apply_model_spinn(apply_fn, params, nu, lbda_c, lbda_ic, *train_data):
             wz = vorz(apply_fn, params, t[i], x[i], y[i], z[i])
             ux, uy, uz = apply_fn(params, t[i], x[i], y[i], z[i])
             loss_w = (1/6.) *    1 * jnp.mean((wx - w[i][0])**2) +     1 * jnp.mean((wy - w[i][1])**2) +     1 * jnp.mean((wz - w[i][2])**2)
-            loss_u = (1/6.) * 1000 * jnp.mean((ux - u[i][0])**2) + 10000 * jnp.mean((uy - u[i][1])**2) + 10000 * jnp.mean((uz - u[i][2])**2)
+            # loss_u = (1/6.) * 1000 * jnp.mean((ux - u[i][0])**2) + 10000 * jnp.mean((uy - u[i][1])**2) + 10000 * jnp.mean((uz - u[i][2])**2)
+            loss_u = 0
             loss += (loss_w + loss_u)
         return loss
 
@@ -104,7 +105,8 @@ def apply_model_spinn(apply_fn, params, nu, lbda_c, lbda_ic, *train_data):
     tc, xc, yc, zc, fc, ti, xi, yi, zi, wi, ui, tb, xb, yb, zb, wb, ub = train_data
 
     # isolate loss func from redundant arguments
-    loss_fn = lambda params: lbda_ic*initial_loss(params, ti, xi, yi, zi, wi, ui) + boundary_loss(params, tb, xb, yb, zb, wb, ub) + residual_loss(params, tc, xc, yc, zc, fc)
+    # loss_fn = lambda params: lbda_ic*initial_loss(params, ti, xi, yi, zi, wi, ui) + boundary_loss(params, tb, xb, yb, zb, wb, ub) + residual_loss(params, tc, xc, yc, zc, fc)
+    loss_fn = lambda params: residual_loss(params, tc, xc, yc, zc, fc)
     loss, gradient = jax.value_and_grad(loss_fn)(params)
 
     return loss, gradient
@@ -205,7 +207,7 @@ if __name__ == '__main__':
             if loss < best:
                 best = loss
                 new_best_error = eval_fn(apply_fn, params, *test_data)
-                if best_error < new_best_error:
+                if new_best_error < best_error:
                     best_error = new_best_error
                     save_weights({"params":params, "state":state}, f"best.npy")
 
